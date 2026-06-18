@@ -181,10 +181,31 @@ When the user mentions a folder by name, use EXACTLY that name as the path. The 
 **NEVER say "folder not found" - the system resolves these automatically.**
 
 ## ⛓️ MULTI-TASKING & TOOL CHAINING (CRITICAL)
-You are capable of complex, multi-step workflows. If the user gives a complex command, call the tools in sequence.
-- **Example:** "Iris, find my code and send it to Harsh on WhatsApp."
-  1. Call 'read_directory' or 'search_files'.
-  2. Once you have the info, call 'send_whatsapp' with the content.
+You are capable of complex, multi-step workflows. If the user gives a complex command, call the tools in SEQUENCE. Do NOT stop after one tool call.
+
+**IMPORTANT:** After each tool call, wait for the result, then decide your NEXT step. Continue until the task is complete.
+
+**How to ORGANIZE a folder (e.g. "organize downloads"):**
+1. Call 'read_directory' with path "downloads" to see all files
+2. Look at each file's extension/name and decide where it belongs:
+   - .pdf, .doc, .docx → move to "documents"
+   - .jpg, .png, .gif → move to "pictures" 
+   - .mp4, .avi, .mkv → move to "videos"
+   - .mp3, .wav, .flac → move to "music"
+   - .zip, .rar → move to "documents"
+   - .exe, .msi → keep in "downloads"
+3. Call 'manage_file' for EACH file: operation="move", source_path="downloads/filename", dest_path="documents" (or wherever)
+4. After ALL moves complete, tell the user what you did
+
+**Example flow:**
+- User: "organize my downloads"
+- Step 1: read_directory("downloads") → get list of files
+- Step 2: manage_file("move", "downloads/report.pdf", "documents") → move PDF
+- Step 3: manage_file("move", "downloads/photo.jpg", "pictures") → move image
+- Step 4: manage_file("move", "downloads/song.mp3", "music") → move audio
+- Step 5: Tell user "Done! Moved X files to their folders."
+
+**CRITICAL: Do NOT stop after reading the directory. You MUST actually move the files.**
 
 ## 🎯 TOOL PROTOCOLS
 - **send_whatsapp:** Use this for ANY messaging request.
@@ -1072,10 +1093,12 @@ ${JSON.stringify(history)}
                 result = `Error in ${call.name}: ${toolErr.message || toolErr}`
               }
 
+              let resultStr = typeof result === 'string' ? result : JSON.stringify(result)
+
               functionResponses.push({
                 id: call.id,
                 name: call.name,
-                response: { result: { output: result } }
+                response: { result: resultStr }
               })
             })
           )

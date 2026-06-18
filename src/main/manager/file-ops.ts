@@ -116,32 +116,43 @@ export async function executeFileOp({
       case 'move': {
         if (!destPath) return { success: false, error: 'Destination required for move.', errorCode: 'EDEST', resolvedSource }
 
+        let finalDest = resolvedDest!
+        try {
+          const destStat = await fs.stat(resolvedDest!)
+          if (destStat.isDirectory()) {
+            finalDest = path.join(resolvedDest!, path.basename(resolvedSource))
+          }
+        } catch {
+          const destDir = path.dirname(resolvedDest!)
+          try { await fs.access(destDir) } catch { await fs.mkdir(destDir, { recursive: true }) }
+        }
+
         try {
           const srcDir = path.parse(resolvedSource).root
-          const destDir = path.parse(resolvedDest!).root
+          const destDrive = path.parse(finalDest).root
 
-          if (srcDir !== destDir) {
+          if (srcDir !== destDrive) {
             throw new Error('EXDEV')
           }
 
-          await fs.rename(resolvedSource, resolvedDest!)
+          await fs.rename(resolvedSource, finalDest)
         } catch (renameErr: any) {
           if (renameErr.code === 'EXDEV' || renameErr.message === 'EXDEV' || renameErr.code === 'EISDIR') {
             const srcStat = await fs.stat(resolvedSource)
             if (srcStat.isDirectory()) {
-              await copyDirRecursive(resolvedSource, resolvedDest!)
+              await copyDirRecursive(resolvedSource, finalDest)
               await removeDirRecursive(resolvedSource)
             } else {
-              const destDir = path.dirname(resolvedDest!)
+              const destDir = path.dirname(finalDest)
               try { await fs.access(destDir) } catch { await fs.mkdir(destDir, { recursive: true }) }
-              await fs.copyFile(resolvedSource, resolvedDest!)
+              await fs.copyFile(resolvedSource, finalDest)
               await fs.unlink(resolvedSource)
             }
           } else {
             throw renameErr
           }
         }
-        return { success: true, message: `Moved to ${resolvedDest}`, resolvedSource, resolvedDest }
+        return { success: true, message: `Moved to ${finalDest}`, resolvedSource, resolvedDest: finalDest }
       }
 
       case 'delete': {
