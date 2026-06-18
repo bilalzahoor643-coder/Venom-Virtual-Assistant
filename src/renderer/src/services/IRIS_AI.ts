@@ -85,6 +85,7 @@ export class GeminiLiveService {
   private lastAppList: string[] = []
   private reconnectAttempts: number = 0
   private maxReconnectAttempts: number = 5
+  private heartbeatInterval: NodeJS.Timeout | null = null
 
   constructor() {
     this.apiKey = ''
@@ -814,6 +815,7 @@ ${JSON.stringify(history)}
 
       this.startMicrophone()
       this.startAppWatcher()
+      this.startHeartbeat()
     }
 
     this.socket.onmessage = async (event) => {
@@ -822,7 +824,6 @@ ${JSON.stringify(history)}
 
         if (data.error) {
           console.error('[IRIS] Server error:', data.error)
-          return
         }
 
         const serverContent = data.serverContent
@@ -1145,7 +1146,12 @@ ${JSON.stringify(history)}
       }
     }
 
+    this.socket.onerror = (err) => {
+      console.error('[IRIS] WebSocket error:', err)
+    }
+
     this.socket.onclose = () => {
+      console.warn('[IRIS] WebSocket closed. Reconnect attempts:', this.reconnectAttempts)
       this.isConnected = false
       this.stopAllAudio()
       if (this.mediaStream) {
@@ -1202,6 +1208,31 @@ ${JSON.stringify(history)}
         }
       }
     }, 3000)
+  }
+
+  startHeartbeat() {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval)
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        try {
+          this.socket.send(JSON.stringify({ clientContent: { turns: [] } }))
+        } catch (e) {
+          console.warn('[IRIS] Heartbeat send failed:', e)
+        }
+      } else if (this.isConnected && (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
+        console.warn('[IRIS] Connection lost, attempting reconnect...')
+        this.reconnect()
+      }
+    }, 30000)
+  }
+
+  reconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return
+    this.reconnectAttempts++
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000)
+    setTimeout(() => {
+      this.connect()
+    }, delay)
   }
 
   async startMicrophone(): Promise<void> {
@@ -1293,6 +1324,10 @@ ${JSON.stringify(history)}
     if (this.appWatcherInterval) {
       clearInterval(this.appWatcherInterval)
       this.appWatcherInterval = null
+    }
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+      this.heartbeatInterval = null
     }
 
     this.isConnected = false
