@@ -39,6 +39,13 @@ import { fetchInstalledApps } from './lib/system'
 import { getLiveLocation } from './logic/live-location'
 import registerAllMissingHandlers from './handler/all-handlers'
 
+process.on('uncaughtException', (err) => {
+  console.error('[IRIS] Uncaught Exception:', err.message)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[IRIS] Unhandled Rejection:', reason)
+})
+
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
 
 if (process.defaultApp) {
