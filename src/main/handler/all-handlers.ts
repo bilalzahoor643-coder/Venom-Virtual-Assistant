@@ -224,5 +224,26 @@ export default function registerAllMissingHandlers() {
     return { success: true }
   })
 
+  // Desktop Capture for Screen Vision
+  safe('desktop-capturer-get-source', async () => {
+    try {
+      const { desktopCapturer } = require('electron')
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } })
+      if (sources && sources.length > 0) {
+        const thumbnail = sources[0].thumbnail
+        return {
+          dataUrl: thumbnail.toDataURL(),
+          mimeType: 'image/png',
+          width: thumbnail.getSize().width,
+          height: thumbnail.getSize().height
+        }
+      }
+      return { error: 'No screen source found' }
+    } catch (e: any) {
+      console.error('[IRIS] Desktop capture error:', e)
+      return { error: e.message }
+    }
+  })
+
   console.log('[IRIS] All missing IPC handlers registered.')
 }

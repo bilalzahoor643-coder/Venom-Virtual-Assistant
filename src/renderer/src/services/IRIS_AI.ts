@@ -86,6 +86,11 @@ export class GeminiLiveService {
   private reconnectAttempts: number = 0
   private maxReconnectAttempts: number = 5
   private heartbeatInterval: NodeJS.Timeout | null = null
+  private silenceDetectorInterval: NodeJS.Timeout | null = null
+  private lastToolCallTime: number = 0
+  private isProcessingTool: boolean = false
+  private screenMonitorInterval: NodeJS.Timeout | null = null
+  private isScreenMonitoring: boolean = false
 
   constructor() {
     this.apiKey = ''
@@ -224,6 +229,22 @@ If the user says "Click on [Object]", "Click the button", or "Select that":
 1. You MUST assume you can see the screen.
 2. You MUST analyze the screen (I will send you the frame).
 3. Call the tool \`click_on_screen\` with the visual coordinates of the object.
+
+## 👁️ SCREEN VISION (REAL-TIME)
+You have REAL-TIME screen vision capability. When the user asks about what's on their screen:
+- **"Screen dekho" / "What's on my screen" / "Meri screen dekho"** → Call \`analyze_screen\` tool to capture and analyze the screen
+- **"Monitor this project" / "Watch my screen" / "Screen monitor karo"** → Call \`monitor_screen\` with action="start" to watch screen in real-time and report when task completes
+- **"Stop monitoring"** → Call \`monitor_screen\` with action="stop"
+
+**IMPORTANT:** When you call \`analyze_screen\`, the screen will be captured and sent to you. Analyze what you see and describe it in detail to the user. If user asks about a specific project or task, tell them what's happening on screen.
+
+**Screen Monitoring Flow:**
+1. User: "Monitor this ChatGPT project, tell me when it's done"
+2. You: Call \`monitor_screen\` with action="start", interval=5000
+3. Every 5 seconds, screen is captured and analyzed
+4. When you detect the task is complete, tell the user: "Sir, your project is complete!"
+5. User: "Stop monitoring"
+6. You: Call \`monitor_screen\` with action="stop"
 `
 
     const contextPrompt = `
@@ -498,6 +519,23 @@ ${JSON.stringify(history)}
                   name: 'take_screenshot',
                   description: 'Take a screenshot of the current screen.',
                   parameters: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'analyze_screen',
+                  description: 'Capture and analyze the current screen in real-time. Use this when user says "look at my screen", "what is on my screen", "screen dekho", "kya chal raha hai screen pe". This captures the screen and sends it to AI vision for analysis.',
+                  parameters: { type: 'object', properties: {} }
+                },
+                {
+                  name: 'monitor_screen',
+                  description: 'Start or stop real-time screen monitoring. Use this when user wants to monitor ongoing tasks like "monitor this project", "watch my screen and tell me when complete", "screen monitor karo".',
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      action: { type: 'string', description: '"start" to begin monitoring, "stop" to end monitoring' },
+                      interval: { type: 'number', description: 'Capture interval in milliseconds (default 5000). Use 3000 for fast monitoring, 10000 for slow.' }
+                    },
+                    required: ['action']
+                  }
                 },
                 {
                   name: 'click_on_screen',
@@ -816,11 +854,18 @@ ${JSON.stringify(history)}
       this.startMicrophone()
       this.startAppWatcher()
       this.startHeartbeat()
+      this.startSilenceDetector()
     }
 
     this.socket.onmessage = async (event) => {
       try {
         const data = JSON.parse(event.data instanceof Blob ? await event.data.text() : event.data)
+
+        if (data.setupComplete) {
+          console.log('[IRIS] Setup complete - Gemini is ready')
+          this.isConnected = true
+          this.reconnectAttempts = 0
+        }
 
         if (data.error) {
           console.error('[IRIS] Server error:', data.error)
@@ -837,6 +882,8 @@ ${JSON.stringify(history)}
         if (data.toolCall) {
           const functionCalls = data.toolCall.functionCalls
           const functionResponses: any[] = []
+          this.isProcessingTool = true
+          this.lastToolCallTime = Date.now()
 
           await Promise.all(
             functionCalls.map(async (call: any) => {
@@ -1086,6 +1133,16 @@ ${JSON.stringify(history)}
                 )
               } else if (call.name === 'lock_system_vault') {
                 result = await executeLockSystem()
+              } else if (call.name === 'analyze_screen') {
+                result = await this.captureScreenAndSendToGemini()
+              } else if (call.name === 'monitor_screen') {
+                if (call.args.action === 'start') {
+                  this.startScreenMonitor(call.args.interval || 5000)
+                  result = 'Screen monitoring started. I will watch the screen and report changes.'
+                } else {
+                  this.stopScreenMonitor()
+                  result = 'Screen monitoring stopped.'
+                }
               } else {
                 result = 'Error: Tool not found.'
               }
@@ -1110,6 +1167,8 @@ ${JSON.stringify(history)}
             }
           }
           this.socket?.send(JSON.stringify(responseMsg))
+          this.isProcessingTool = false
+          console.log('[IRIS] Tool responses sent to Gemini, resuming conversation')
         }
 
         if (serverContent) {
@@ -1214,13 +1273,10 @@ ${JSON.stringify(history)}
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval)
     this.heartbeatInterval = setInterval(() => {
       if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        try {
-          this.socket.send(JSON.stringify({ clientContent: { turns: [] } }))
-        } catch (e) {
-          console.warn('[IRIS] Heartbeat send failed:', e)
-        }
+        console.log('[IRIS] Heartbeat - connection alive')
       } else if (this.isConnected && (!this.socket || this.socket.readyState !== WebSocket.OPEN)) {
         console.warn('[IRIS] Connection lost, attempting reconnect...')
+        this.isConnected = false
         this.reconnect()
       }
     }, 30000)
@@ -1233,6 +1289,81 @@ ${JSON.stringify(history)}
     setTimeout(() => {
       this.connect()
     }, delay)
+  }
+
+  startSilenceDetector() {
+    if (this.silenceDetectorInterval) clearInterval(this.silenceDetectorInterval)
+    this.silenceDetectorInterval = setInterval(() => {
+      if (!this.isConnected || !this.socket || this.socket.readyState !== WebSocket.OPEN) return
+      
+      if (this.isProcessingTool && Date.now() - this.lastToolCallTime > 10000) {
+        console.warn('[IRIS] Tool execution timeout - re-prompting Gemini')
+        this.isProcessingTool = false
+        try {
+          this.socket.send(JSON.stringify({
+            clientContent: {
+              turns: [{ role: 'user', parts: [{ text: '[SYSTEM] Previous tool execution may have failed or timed out. Please continue responding to the user.' }] }]
+            }
+          }))
+        } catch (e) {
+          console.error('[IRIS] Re-prompt failed:', e)
+        }
+      }
+    }, 15000)
+  }
+
+  async captureScreenAndSendToGemini(): Promise<string> {
+    try {
+      const screenData = await window.electron.ipcRenderer.invoke('desktop-capturer-get-source')
+      if (!screenData || !screenData.dataUrl) {
+        return 'Error: Could not capture screen'
+      }
+      
+      const base64Data = screenData.dataUrl.split(',')[1]
+      const mimeType = screenData.mimeType || 'image/png'
+      
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify({
+          clientContent: {
+            turns: [{
+              role: 'user',
+              parts: [{
+                inlineData: {
+                  mimeType: mimeType,
+                  data: base64Data
+                }
+              }, {
+                text: '[SCREEN_VISION] I have captured the current screen. Please analyze what you see and describe it to the user.'
+              }]
+            }]
+          }
+        }))
+        return 'Screen captured and sent to Gemini for analysis'
+      }
+      return 'Error: Not connected to Gemini'
+    } catch (e: any) {
+      return `Error capturing screen: ${e.message}`
+    }
+  }
+
+  startScreenMonitor(intervalMs: number = 5000) {
+    if (this.screenMonitorInterval) clearInterval(this.screenMonitorInterval)
+    this.isScreenMonitoring = true
+    this.screenMonitorInterval = setInterval(async () => {
+      if (!this.isScreenMonitoring || !this.isConnected) {
+        this.stopScreenMonitor()
+        return
+      }
+      await this.captureScreenAndSendToGemini()
+    }, intervalMs)
+  }
+
+  stopScreenMonitor() {
+    this.isScreenMonitoring = false
+    if (this.screenMonitorInterval) {
+      clearInterval(this.screenMonitorInterval)
+      this.screenMonitorInterval = null
+    }
   }
 
   async startMicrophone(): Promise<void> {
