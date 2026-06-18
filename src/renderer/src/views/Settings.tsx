@@ -1,0 +1,627 @@
+import { useEffect, useRef, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import * as faceapi from 'face-api.js'
+import { GiArtificialIntelligence } from 'react-icons/gi'
+import {
+  RiKey2Line,
+  RiSave3Line,
+  RiLockPasswordLine,
+  RiScan2Line,
+  RiAddLine,
+  RiCheckLine,
+  RiLock2Line,
+  RiShieldKeyholeLine,
+  RiPlugLine,
+  RiTerminalWindowLine,
+  RiRefreshLine,
+  RiDownloadCloud2Line,
+  RiRocketLine,
+  RiInformationLine
+} from 'react-icons/ri'
+
+interface SettingsProps {
+  isSystemActive: boolean
+}
+
+type TabType = 'updates' | 'keys' | 'security'
+
+function GlassPanel({
+  children,
+  className = ''
+}: {
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div
+      className={`relative overflow-hidden rounded-2xl bg-zinc-900/60 backdrop-blur-xl border border-white/10 shadow-lg ${className}`}
+    >
+      <div className="relative z-10">{children}</div>
+    </div>
+  )
+}
+
+function ProgressBar({ progress }: { progress: number }) {
+  return (
+    <div className="h-2 w-full bg-black/50 rounded-full overflow-hidden border border-white/5">
+      <motion.div
+        className="h-full bg-cyan-500 rounded-full shadow-[0_0_10px_rgba(6,182,212,0.5)]"
+        initial={{ width: 0 }}
+        animate={{ width: `${progress}%` }}
+        transition={{ ease: 'easeOut' }}
+      />
+    </div>
+  )
+}
+
+export default function SettingsView({ isSystemActive }: SettingsProps) {
+  const [activeTab, setActiveTab] = useState<TabType>('updates')
+
+  // Initialize as empty strings, NO localStorage
+  const [geminiKey, setGeminiKey] = useState('')
+  const [groqKey, setGroqKey] = useState('')
+  const [hfKey, setHfKey] = useState('')
+  const [tavilyKey, settavilyKey] = useState('')
+
+  const [isSecurityUnlocked, setIsSecurityUnlocked] = useState(false)
+  const [authPin, setAuthPin] = useState('')
+  const [authError, setAuthError] = useState(false)
+
+  const [newPin, setNewPin] = useState('')
+  const [faceCount, setFaceCount] = useState(0)
+
+  const [isScanningFace, setIsScanningFace] = useState(false)
+  const [enrollStatus, setEnrollStatus] = useState('')
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  const [appVersion, setAppVersion] = useState('1.5.1')
+  const [updateStatus, setUpdateStatus] = useState<
+    'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  >('idle')
+  const [updateVersion, setUpdateVersion] = useState('')
+  const [updateNotes, setUpdateNotes] = useState('No new updates detected. Your system is current.')
+  const [downloadProgress, setDownloadProgress] = useState(0)
+
+  useEffect(() => {
+    if (!window.electron?.ipcRenderer) return undefined
+
+    window.electron.ipcRenderer.invoke('secure-get-keys').then((keys: any) => {
+      if (keys) {
+        setGeminiKey(keys.geminiKey || '')
+        setGroqKey(keys.groqKey || '')
+        setHfKey(keys.hfKey || '')
+        settavilyKey(keys.tavilyKey || '')
+      }
+    })
+
+    window.electron.ipcRenderer
+      .invoke('check-vault-status')
+      .then((res: any) => setFaceCount(res?.faceCount || 0))
+
+    window.electron.ipcRenderer.invoke('get-app-version').then((v: string) => setAppVersion(v))
+
+    const handleUpdaterEvent = (_e: any, { status, data, error }: any) => {
+      if (status === 'checking') setUpdateStatus('checking')
+      if (status === 'available') {
+        setUpdateStatus('available')
+        setUpdateVersion(data.version)
+        setUpdateNotes(data.releaseNotes || 'Bug fixes and performance improvements.')
+      }
+      if (status === 'not-available') {
+        setUpdateStatus('idle')
+        setUpdateNotes('Your system is currently up to date.')
+      }
+      if (status === 'downloading') {
+        setUpdateStatus('downloading')
+        setDownloadProgress(Math.round(data.percent))
+      }
+      if (status === 'downloaded') setUpdateStatus('ready')
+      if (status === 'error') {
+        setUpdateStatus('error')
+        setUpdateNotes(`Update failed: ${error}`)
+      }
+    }
+
+    window.electron.ipcRenderer.on('updater-event', handleUpdaterEvent)
+
+    return () => {
+      window.electron.ipcRenderer.removeListener('updater-event', handleUpdaterEvent)
+    }
+  }, [])
+
+  const checkForUpdates = () => window.electron.ipcRenderer.invoke('check-for-updates')
+  const downloadUpdate = () => window.electron.ipcRenderer.invoke('download-update')
+  const installUpdate = () => window.electron.ipcRenderer.invoke('install-update')
+
+  const saveApiKeys = async () => {
+    if (window.electron?.ipcRenderer) {
+      try {
+        await window.electron.ipcRenderer.invoke('secure-save-keys', {
+          groqKey,
+          geminiKey,
+          hfKey,
+          tavilyKey
+        })
+        alert('API Keys securely encrypted and saved to Vault. You can now Use this!.')
+      } catch (e) {
+        alert('Failed to save keys to the secure vault.')
+      }
+    }
+  }
+
+  const unlockSecurityModule = async () => {
+    if (!window.electron?.ipcRenderer) return
+    const isValid = await window.electron.ipcRenderer.invoke('verify-vault-pin', authPin)
+    if (isValid) {
+      setIsSecurityUnlocked(true)
+      setAuthPin('')
+    } else {
+      setAuthError(true)
+      setTimeout(() => setAuthError(false), 1000)
+    }
+  }
+
+  const updateMasterPin = async () => {
+    if (newPin.length !== 4 || !window.electron?.ipcRenderer) return
+    await window.electron.ipcRenderer.invoke('setup-vault-pin', newPin)
+    setNewPin('')
+    alert('Master PIN has been updated.')
+  }
+
+  const startFaceEnrollment = async () => {
+    setIsScanningFace(true)
+    setEnrollStatus('Starting camera...')
+    try {
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri('./models'),
+        faceapi.nets.faceLandmark68Net.loadFromUri('./models'),
+        faceapi.nets.faceRecognitionNet.loadFromUri('./models')
+      ])
+
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        setEnrollStatus('Please look directly at the camera')
+
+        const scanInterval = setInterval(async () => {
+          if (!videoRef.current || videoRef.current.readyState !== 4) return
+          const detection = await faceapi
+            .detectSingleFace(videoRef.current)
+            .withFaceLandmarks()
+            .withFaceDescriptor()
+
+          if (detection) {
+            clearInterval(scanInterval)
+            setEnrollStatus('Face detected. Saving securely...')
+            const descriptorArray = Array.from(detection.descriptor)
+
+            if (window.electron?.ipcRenderer) {
+              await window.electron.ipcRenderer.invoke('setup-vault-face', descriptorArray)
+            }
+
+            stream.getTracks().forEach((t) => t.stop())
+            setIsScanningFace(false)
+            setFaceCount((prev) => prev + 1)
+            alert('Face ID enrolled successfully.')
+          }
+        }, 1000)
+      }
+    } catch (e) {
+      setEnrollStatus('Could not access camera.')
+      setTimeout(() => setIsScanningFace(false), 2000)
+    }
+  }
+
+  const inputContainerClass =
+    'flex items-center bg-black/40 border border-white/10 rounded-lg px-4 py-3 focus-within:border-emerald-500 focus-within:ring-1 focus-within:ring-emerald-500 transition-all duration-200 w-full'
+  const labelClass = 'text-sm text-zinc-300 font-medium flex items-center gap-2 mb-2'
+  const titleClass = 'text-lg font-semibold text-white flex items-center gap-3'
+
+  const tabConfigs = [
+    { id: 'updates', label: 'System Updates', icon: <RiTerminalWindowLine size={18} /> },
+    { id: 'keys', label: 'API Keys', icon: <RiPlugLine size={18} /> },
+    { id: 'security', label: 'Security', icon: <RiShieldKeyholeLine size={18} /> }
+  ]
+
+  return (
+    <div className="flex-1 p-6 md:p-10 flex flex-col items-center bg-transparent min-h-screen text-zinc-100 overflow-y-auto scrollbar-small">
+      <motion.div
+        className="w-full max-w-4xl flex flex-col gap-8"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+      >
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 border-b border-white/10">
+          <div className="flex items-center gap-4">
+            <div className="relative flex items-center justify-center h-14 w-14 rounded-xl bg-zinc-900 border border-white/10 shadow-lg">
+              <GiArtificialIntelligence size={28} className="text-zinc-100" />
+            </div>
+            <div>
+              <h2 className="text-3xl font-bold tracking-tight text-white">Settings</h2>
+              <div className="flex items-center gap-2 mt-1">
+                <div
+                  className={`h-2 w-2 rounded-full ${isSystemActive ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-600'}`}
+                />
+                <p className="text-sm text-zinc-400 font-medium">
+                  {isSystemActive ? 'System is Online' : 'System is Offline'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex bg-zinc-900/80 p-1.5 rounded-xl border border-white/10 backdrop-blur-md shadow-xl overflow-x-auto scrollbar-none">
+            {tabConfigs.map((tab) => (
+              <motion.button
+                key={tab.id}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setActiveTab(tab.id as TabType)}
+                className={`cursor-pointer flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'bg-white text-black shadow-md'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {tab.icon} {tab.label}
+              </motion.button>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative min-h-125">
+          <AnimatePresence mode="wait">
+            {activeTab === 'updates' && (
+              <motion.div
+                key="updates"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="grid grid-cols-1 md:grid-cols-12 gap-6 absolute w-full"
+              >
+                <GlassPanel className="md:col-span-7 p-8 flex flex-col justify-center">
+                  <div className="flex justify-between items-center mb-8">
+                    <span className={titleClass}>
+                      <RiRocketLine className="text-zinc-400" /> Software Update
+                    </span>
+                    <span className="text-xs bg-black/50 text-zinc-300 border border-white/10 px-3 py-1.5 rounded-lg font-mono">
+                      Current: v{appVersion}
+                    </span>
+                  </div>
+
+                  <div className="flex-1 flex flex-col justify-center w-full">
+                    {(updateStatus === 'idle' || updateStatus === 'error') && (
+                      <div className="flex flex-col items-center text-center gap-4">
+                        <div className="h-16 w-16 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-2">
+                          <RiCheckLine size={32} />
+                        </div>
+                        <h3 className="text-xl font-bold text-white">You're up to date</h3>
+                        <p className="text-sm text-zinc-400">
+                          IRIS is running the latest available version.
+                        </p>
+
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={checkForUpdates}
+                          className="mt-6 px-6 py-3 cursor-pointer rounded-xl bg-white text-black font-semibold text-sm flex items-center gap-2"
+                        >
+                          <RiRefreshLine size={18} /> Check for Updates
+                        </motion.button>
+                      </div>
+                    )}
+
+                    {updateStatus === 'checking' && (
+                      <div className="flex flex-col items-center text-center gap-6 py-8">
+                        <RiRefreshLine className="text-white animate-spin" size={40} />
+                        <p className="text-base text-zinc-300 font-medium">
+                          Checking servers for updates...
+                        </p>
+                      </div>
+                    )}
+
+                    {(updateStatus === 'available' || updateStatus === 'downloading') && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="bg-cyan-950/40 border border-cyan-500/30 p-6 rounded-2xl flex flex-col gap-4 shadow-[0_0_30px_rgba(6,182,212,0.1)]"
+                      >
+                        <div className="flex items-start gap-4">
+                          <div className="p-3 bg-cyan-500/20 text-cyan-400 rounded-xl">
+                            <RiDownloadCloud2Line size={24} />
+                          </div>
+                          <div>
+                            <h3 className="text-lg font-bold text-white">
+                              Update Available: v{updateVersion}
+                            </h3>
+                            <p className="text-sm text-cyan-100/70 mt-1">
+                              A new version of IRIS is ready to be installed.
+                            </p>
+                          </div>
+                        </div>
+
+                        {updateStatus === 'available' ? (
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={downloadUpdate}
+                            className="mt-4 w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-sm"
+                          >
+                            Download Update
+                          </motion.button>
+                        ) : (
+                          <div className="mt-4 flex flex-col gap-2">
+                            <div className="flex justify-between text-sm text-cyan-400 font-medium">
+                              <span>Downloading...</span>
+                              <span>{downloadProgress}%</span>
+                            </div>
+                            <ProgressBar progress={downloadProgress} />
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+
+                    {updateStatus === 'ready' && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="bg-emerald-950/40 border border-emerald-500/30 p-6 rounded-2xl flex flex-col gap-4 text-center items-center shadow-[0_0_30px_rgba(16,185,129,0.1)]"
+                      >
+                        <RiCheckLine size={40} className="text-emerald-400 mb-2" />
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Download Complete</h3>
+                          <p className="text-sm text-emerald-100/70 mt-1">
+                            Restart the application to apply the new update.
+                          </p>
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={installUpdate}
+                          className="mt-4 w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-sm"
+                        >
+                          Restart & Install
+                        </motion.button>
+                      </motion.div>
+                    )}
+                  </div>
+                </GlassPanel>
+
+                <GlassPanel className="md:col-span-5 p-0 flex flex-col h-full max-h-100">
+                  <div className="bg-white/5 border-b border-white/10 px-6 py-4 flex items-center gap-3">
+                    <RiInformationLine className="text-zinc-400" size={18} />
+                    <span className="text-sm font-semibold text-white">Release Notes</span>
+                  </div>
+                  <div className="flex-1 p-6 overflow-y-auto scrollbar-small text-sm text-zinc-300 leading-relaxed">
+                    {updateStatus === 'checking' ? (
+                      <span className="text-zinc-500">Fetching notes...</span>
+                    ) : (
+                      <p className="whitespace-pre-wrap">{updateNotes}</p>
+                    )}
+                  </div>
+                </GlassPanel>
+              </motion.div>
+            )}
+
+            {activeTab === 'keys' && (
+              <motion.div
+                key="keys"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="w-full absolute"
+              >
+                <GlassPanel className="p-8 flex flex-col gap-8">
+                  <div className="flex justify-between items-center pb-2">
+                    <span className={titleClass}>
+                      <RiKey2Line className="text-emerald-400" size={24} /> API Providers
+                    </span>
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={saveApiKeys}
+                      className="bg-emerald-500 cursor-pointer text-black px-6 py-2.5 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2"
+                    >
+                      <RiSave3Line size={18} /> Save Keys
+                    </motion.button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className={labelClass}>Google Gemini API</label>
+                      <div className={inputContainerClass}>
+                        <input
+                          type="password"
+                          value={geminiKey}
+                          onChange={(e) => setGeminiKey(e.target.value)}
+                          placeholder="AIzaSy..."
+                          className="bg-transparent border-none outline-none text-base text-white w-full placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Groq Cloud API</label>
+                      <div className={inputContainerClass}>
+                        <input
+                          type="password"
+                          value={groqKey}
+                          onChange={(e) => setGroqKey(e.target.value)}
+                          placeholder="gsk_..."
+                          className="bg-transparent border-none outline-none text-base text-white w-full placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Hugging Face Token</label>
+                      <div className={inputContainerClass}>
+                        <input
+                          type="password"
+                          value={hfKey}
+                          onChange={(e) => setHfKey(e.target.value)}
+                          placeholder="hf_..."
+                          className="bg-transparent border-none outline-none text-base text-white w-full placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={labelClass}>Tavily Search API</label>
+                      <div className={inputContainerClass}>
+                        <input
+                          type="password"
+                          value={tavilyKey}
+                          onChange={(e) => settavilyKey(e.target.value)}
+                          placeholder="tvly-..."
+                          className="bg-transparent border-none outline-none text-base text-white w-full placeholder:text-zinc-600"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-zinc-800/50 border border-white/5 p-4 rounded-xl flex gap-3 items-start mt-4">
+                    <RiShieldKeyholeLine className="text-zinc-400 shrink-0 mt-0.5" size={18} />
+                    <p className="text-sm text-zinc-300 leading-relaxed">
+                      <strong>Privacy Notice:</strong> Your API keys are encrypted and saved locally
+                      on this machine. They are never sent to a central server, ensuring your usage
+                      and billing remain completely private.
+                    </p>
+                  </div>
+                </GlassPanel>
+              </motion.div>
+            )}
+
+            {activeTab === 'security' && (
+              <motion.div
+                key="security"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="w-full absolute"
+              >
+                <GlassPanel className="p-0 overflow-hidden min-h-100">
+                  <AnimatePresence>
+                    {!isSecurityUnlocked && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+                        className="absolute inset-0 z-20 backdrop-blur-3xl bg-black/80 flex flex-col items-center justify-center border border-white/5"
+                      >
+                        <div
+                          className={`p-6 rounded-full mb-6 border transition-all duration-300 ${authError ? 'border-red-500 bg-red-500/10' : 'border-white/10 bg-white/5'}`}
+                        >
+                          <RiLockPasswordLine
+                            size={40}
+                            className={authError ? 'text-red-500' : 'text-white'}
+                          />
+                        </div>
+                        <p className="text-base text-white font-semibold mb-6">
+                          Enter PIN to Unlock Security Settings
+                        </p>
+                        <div className="flex gap-3 h-14">
+                          <input
+                            type="password"
+                            maxLength={4}
+                            pattern="\d*"
+                            value={authPin}
+                            onChange={(e) => setAuthPin(e.target.value.replace(/\D/g, ''))}
+                            placeholder="PIN"
+                            className={`h-full bg-black/50 border w-40 rounded-xl text-center text-2xl tracking-[0.5em] text-white outline-none transition-colors ${authError ? 'border-red-500' : 'border-white/20 focus:border-white'}`}
+                          />
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={unlockSecurityModule}
+                            className="h-full px-8 cursor-pointer bg-white text-black text-sm font-bold rounded-xl transition-all"
+                          >
+                            Unlock
+                          </motion.button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
+                    <div className="flex flex-col h-full">
+                      <span className={`${titleClass} mb-6`}>
+                        <RiLock2Line className="text-zinc-400" size={20} /> App Master PIN
+                      </span>
+                      <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
+                        This 4-digit PIN protects your API keys, biometric data, and core settings
+                        from unauthorized access.
+                      </p>
+                      <div className="mt-auto">
+                        <label className={labelClass}>Set New PIN</label>
+                        <div className={inputContainerClass}>
+                          <input
+                            type="password"
+                            maxLength={4}
+                            pattern="\d*"
+                            value={newPin}
+                            onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
+                            placeholder="Enter 4 digits"
+                            className="bg-transparent border-none outline-none text-xl tracking-[0.3em] text-white w-full"
+                          />
+                          <motion.button
+                            whileTap={{ scale: 0.9 }}
+                            onClick={updateMasterPin}
+                            className="text-zinc-400 cursor-pointer hover:text-white transition-colors ml-2 bg-white/5 p-2 rounded-lg"
+                          >
+                            <RiSave3Line size={20} />
+                          </motion.button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col h-full border-t md:border-t-0 md:border-l border-white/10 pt-8 md:pt-0 md:pl-8">
+                      <div className="flex justify-between items-center mb-6 border-b border-white/5 pb-4">
+                        <span className={titleClass}>
+                          <RiScan2Line className="text-zinc-400" size={20} /> Face Unlock Setup
+                        </span>
+                        <span className="text-xs text-zinc-300 bg-white/10 px-3 py-1 rounded-lg font-medium">
+                          {faceCount} Faces Saved
+                        </span>
+                      </div>
+
+                      {isScanningFace ? (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                          <div className="p-1 rounded-2xl border-2 border-emerald-500 bg-emerald-500/10">
+                            <video
+                              ref={videoRef}
+                              autoPlay
+                              muted
+                              playsInline
+                              className="w-32 h-32 rounded-xl object-cover -scale-x-100"
+                            />
+                          </div>
+                          <span className="text-sm text-emerald-400 font-semibold animate-pulse">
+                            {enrollStatus}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex flex-col justify-between">
+                          <p className="text-sm text-zinc-400 leading-relaxed">
+                            Enroll your face to securely unlock the application without needing to
+                            type your Master PIN. Camera data is processed locally.
+                          </p>
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={startFaceEnrollment}
+                            className="w-full py-3 rounded-xl cursor-pointer bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold text-sm flex items-center justify-center gap-2 transition-all mt-6"
+                          >
+                            <RiAddLine size={18} /> Add New Face
+                          </motion.button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </GlassPanel>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </motion.div>
+    </div>
+  )
+}

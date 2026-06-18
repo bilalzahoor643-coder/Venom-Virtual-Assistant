@@ -1,0 +1,52 @@
+{
+  "header": "# Changelog\n\nAll notable changes to the IRIS Voice-First Desktop Assistant will be documented in this file.",
+  "types": [
+    {
+      "type": "feat",
+      "section": "✨ Features"
+    },
+    {
+      "type": "fix",
+      "section": "🐛 Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "⚡ Performance Improvements"
+    },
+    {
+      "type": "security",
+      "section": "🛡️ Security Updates"
+    },
+    {
+      "type": "docs",
+      "section": "📖 Documentation",
+      "hidden": false
+    },
+    {
+      "type": "refactor",
+      "section": "♻️ Code Refactoring",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "section": "🧹 Maintenance",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "section": "💎 Styling",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "section": "🚨 Testing",
+      "hidden": true
+    }
+  ],
+  "commitUrlFormat": "https://github.com/IRISX-AI/IRIS-AI/commit/{{hash}}",
+  "compareUrlFormat": "https://github.com/IRISX-AI/IRIS-AI/compare/{{previousTag}}...{{currentTag}}",
+  "issueUrlFormat": "https://github.com/IRISX-AI/IRIS-AI/issues/{{id}}",
+  "issuePrefixes": [
+    "#"
+  ]
+}
